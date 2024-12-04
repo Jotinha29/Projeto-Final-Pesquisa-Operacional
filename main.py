@@ -1,6 +1,4 @@
-from pulp import LpProblem, LpVariable, lpSum, LpMinimize, PULP_CBC_CMD
 from datetime import datetime, timedelta
-import random
 
 # Dados dos funcionários e localidades
 funcionarios = {
@@ -41,70 +39,82 @@ distancias = [
     [50, 55, 52, 50, 65, 55, 50, 60, 62, 50, 10, 0]   # Brazlândia
 ]
 
-# Função para resolver a rota com minimização da distância
-def resolver_otimizacao(equipe, distancias, velocidade_media=40):
-    n = len(distancias)
-    cidades = [0] + equipe  # Inclui Brasília (0) e as cidades da equipe
+# Variáveis de capacidade e autonomia do veículo
+capacidade_passageiros = 5
+autonomia_km = 80
+velocidade_media = 60  # km/h
 
-    # Problema de Minimização
-    problema = LpProblem("Minimizar_Distancia", LpMinimize)
+# Controle global do horário do carro
+horario_atual = datetime.strptime("18:00", "%H:%M")
 
-    # Variáveis de decisão
-    rota = LpVariable.dicts("Rota", [(i, j) for i in cidades for j in cidades if i != j], 0, 1, cat='Binary')
+# Função para calcular sub-rotas com retornos à sede
+def calcular_subrotas(cidades, distancias, autonomia_km, capacidade_passageiros):
+    subrotas = []
+    rota_atual = [0]  # Começa em Brasília (0)
+    distancia_atual = 0
+    passageiros_atual = 0
 
-    # Função objetivo: minimizar a soma das distâncias
-    problema += lpSum(rota[i, j] * distancias[i][j] for i in cidades for j in cidades if i != j)
+    for cidade in cidades:
+        proxima_distancia = distancias[rota_atual[-1]][cidade]
+        if (
+            distancia_atual + proxima_distancia > autonomia_km or
+            passageiros_atual >= capacidade_passageiros
+        ):
+            # Fechar sub-rota e voltar à sede
+            rota_atual.append(0)  # Retorno à sede
+            subrotas.append(rota_atual)
+            rota_atual = [0, cidade]  # Nova sub-rota começando na sede
+            distancia_atual = distancias[0][cidade]
+            passageiros_atual = 1  # Primeiro passageiro da nova sub-rota
+        else:
+            # Continuar na rota atual
+            rota_atual.append(cidade)
+            distancia_atual += proxima_distancia
+            passageiros_atual += 1
 
-    # Restrição 1: Cada cidade deve ser visitada exatamente uma vez
-    for i in cidades:
-        problema += lpSum(rota[i, j] for j in cidades if j != i) == 1
-        problema += lpSum(rota[j, i] for j in cidades if j != i) == 1
+    # Adicionar última sub-rota
+    if len(rota_atual) > 1:
+        rota_atual.append(0)  # Garantir retorno à sede
+        subrotas.append(rota_atual)
 
-    # Restrição 2: Subtours não são permitidos (eliminação de ciclos)
-    u = LpVariable.dicts("u", cidades, 0, len(cidades) - 1, cat='Integer')
-    for i in cidades[1:]:
-        for j in cidades[1:]:
-            if i != j:
-                problema += u[i] - u[j] + len(cidades) * rota[i, j] <= len(cidades) - 1
+    return subrotas
 
-    # Resolvendo o problema
-    problema.solve(PULP_CBC_CMD(msg=0))
+# Função para calcular rotas e horários
+def resolver_rotas(equipe, distancias, autonomia_km, capacidade_passageiros, velocidade_media):
+    global horario_atual  # Usa o horário global do carro
+    subrotas = calcular_subrotas(equipe, distancias, autonomia_km, capacidade_passageiros)
+    resultado = []
 
-    # Extraindo a solução
-    rota_final = []
-    for i in cidades:
-        for j in cidades:
-            if i != j and rota[i, j].value() == 1:
-                rota_final.append((i, j))
+    for idx, subrota in enumerate(subrotas):
+        distancia_total = sum(distancias[subrota[i]][subrota[i + 1]] for i in range(len(subrota) - 1))
+        print(f"\nInício da sub-rota às {horario_atual.strftime('%H:%M')}")
 
-    # Ordenar a rota para exibição
-    rota_ordenada = [0]
-    while len(rota_ordenada) < len(cidades):
-        for (i, j) in rota_final:
-            if i == rota_ordenada[-1]:
-                rota_ordenada.append(j)
+        for i in range(len(subrota) - 1):
+            origem = subrota[i]
+            destino = subrota[i + 1]
+            tempo_viagem = distancias[origem][destino] / velocidade_media
+            horario_chegada = horario_atual + timedelta(hours=tempo_viagem)
+            print(f"Saindo de {funcionarios.get(origem, 'Brasília')} às {horario_atual.strftime('%H:%M')} e chegando em {funcionarios.get(destino, 'Brasília')} às {horario_chegada.strftime('%H:%M')}")
+            horario_atual = horario_chegada
 
-    # Calcular a distância total
-    distancia_total = sum(distancias[i][j] for i, j in zip(rota_ordenada[:-1], rota_ordenada[1:]))
+        print(f"Distância percorrida: {distancia_total} km")
 
-    # Cálculo dos horários
-    horario_atual = datetime.strptime(f"18:{random.randint(0, 59)}", "%H:%M")
-    print(f"\nSaindo da empresa às {horario_atual.strftime('%H:%M')}")
+        if idx < len(subrotas) - 1:  # Exibir mensagem entre sub-rotas
+            print("\nVoltando para a empresa, para carregar o carro")
 
-    for i, j in zip(rota_ordenada[:-1], rota_ordenada[1:]):
-        tempo_viagem = distancias[i][j] / velocidade_media
-        horario_chegada = horario_atual + timedelta(hours=tempo_viagem)
-        print(f"Saindo de {funcionarios.get(i, 'a empresa')} às {horario_atual.strftime('%H:%M')} e chegando em {funcionarios.get(j, 'a empresa')} às {horario_chegada.strftime('%H:%M')}")
-        horario_atual = horario_chegada
+        resultado.append({
+            "rota": subrota,
+            "distancia": distancia_total,
+            "horario_termino": horario_atual
+        })
 
-    print(f"Chegando de volta à empresa às {horario_atual.strftime('%H:%M')}")
+    return resultado
 
-    return rota_ordenada, distancia_total
-
-# Calculando rotas otimizadas para cada equipe
+# Resolvendo as rotas para cada equipe
 for equipe, trabalhadores in equipes.items():
     print(f"\n{equipe}:")
-    rota, distancia = resolver_otimizacao(trabalhadores, distancias)
-    rota_nomes = [funcionarios.get(cidade, "Brasília") for cidade in rota]
-    print("Rota:", " -> ".join(rota_nomes))
-    print(f"Distância total percorrida: {distancia} km")
+    rotas = resolver_rotas(trabalhadores, distancias, autonomia_km, capacidade_passageiros, velocidade_media)
+    for i, rota in enumerate(rotas):
+        nomes = [funcionarios.get(cidade, "Brasília") for cidade in rota["rota"]]
+        print(f"Sub-rota {i + 1}: {' -> '.join(nomes)}")
+        print(f"Distância percorrida: {rota['distancia']} km")
